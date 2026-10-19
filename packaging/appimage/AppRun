@@ -1,0 +1,12 @@
+#!/bin/bash
+# AppImage entry point. Keep desktop handlers and multimedia children outside
+# PyInstaller/AppImage's temporary library environment.
+set -euo pipefail
+APPDIR="${APPDIR:-$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)}"
+unset _PYI_APPLICATION_HOME_DIR _PYI_ARCHIVE_FILE _PYI_PARENT_PROCESS_LEVEL _PYI_SPLASH_IPC
+if [[ -n "${LD_LIBRARY_PATH_ORIG:-}" ]]; then
+  export LD_LIBRARY_PATH="$LD_LIBRARY_PATH_ORIG"
+fi
+unset LD_LIBRARY_PATH_ORIG
+export PATH="$APPDIR/usr/bin:${PATH:-/usr/bin:/bin}"
+exec "$APPDIR/usr/lib/MicroSlideStitcher/MicroSlideStitcher" "$@"

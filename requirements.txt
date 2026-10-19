@@ -1,0 +1,6 @@
+# Pinned to what was actually installed and tested in this build.
+numpy==2.5.2
+opencv-contrib-python-headless==5.0.0.93   # on Manjaro desktop you may prefer opencv-contrib-python
+tifffile==2026.8.16
+matplotlib==3.11.1        # only used for diagnostics/camera_path.png
+pytest==9.1.1             # tests only

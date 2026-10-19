@@ -1,0 +1,55 @@
+MicroSlideStitcher changelog
+============================
+
+0.7.0 — 2026-08-25
+- Added --scan-mode {sweep,serpentine} (default sweep, byte-identical to 0.6.0) and global bundle
+  adjustment behind --bundle-adjust / --no-bundle-adjust, with --ba-max-iterations,
+  --ba-max-seconds, --ba-max-pairs, --ba-min-overlap, --serpentine-min-overlap and
+  --serpentine-turn-translation-frac.
+- Added non-adjacent (loop-closure) match discovery: pairs are shortlisted by predicted overlap
+  from the chained placement, then really feature-matched through the existing matcher and the
+  existing inlier/scale/rotation/reprojection gates, with a hard cap instead of an O(n^2) search.
+- Added joint refinement of all frame transforms over every verified correspondence, one frame
+  held fixed as the gauge, with a Huber-robust cost. OpenCV's detail bundle adjusters are tried
+  first; a numpy-only Levenberg-Marquardt is the fallback, so scipy stays out of the bundle.
+- The chained solution is kept, and a panorama is still written, whenever the refinement fails,
+  hits its iteration or wall-clock cap, or does not reduce the robust cost.
+- Serpentine mode tolerates the direction reversal and step-down at a row turn via a wider
+  translation allowance for that one pair; all other geometric gates are unchanged.
+- GUI: "Scan type" control with plain-language options, an advanced bundle-adjustment checkbox
+  and iteration cap, and new results rows; report.html and summary.json report pairs found and
+  accepted, iterations, and reprojection error before versus after.
+- When bundle adjustment changes the geometry, the transforms actually used are written to
+  diag/transforms_bundle_adjusted.json; transforms.json still holds the chained solution.
+
+0.6.0 — 2026-08-25
+- Added the in-app user manual (Help -> User manual, F1): QTextBrowser only, clickable table of
+  contents with Back/Forward, live Find with highlighting, "Save manual as HTML..." export, and a
+  complete flag reference generated from cli.build_parser() at runtime so it cannot drift.
+
+0.5.0 — 2026-08-24
+- Added the modeless About dialog with licence, diagnostic-use limitation and support diagnostics.
+
+0.4.2 — 2026-08-24
+- Hardened opening of output folders and reports from frozen PyInstaller builds by using
+  sanitised external handlers rather than Qt desktop services.
+
+0.4.1 — 2026-08-24
+- Made report/folder opening report a real handler result, with clear fallback feedback.
+
+0.4.0 — 2026-08-23
+- Added image-sequence input: folders, individual stills and globs; natural ordering, mtime
+  ordering, stride, image metadata and a GUI image-folder workflow.
+
+0.3.0 — 2026-08-22
+- Added the optional PySide6 desktop GUI, live command preview, offscreen-tested results tabs,
+  image viewer, timeline and cancellation.
+
+0.2.1 — 2026-08-22
+- Added ffmpeg 8 compatibility negotiation for -fps_mode / -vsync frame extraction.
+
+0.2.0 — 2026-08-20
+- Added wide-baseline segment recovery and multiple panorama output for unrejoinable scans.
+
+0.1.0 — 2026-08-20
+- Initial video-to-panorama pipeline, diagnostics/reporting, synthetic generator and tests.

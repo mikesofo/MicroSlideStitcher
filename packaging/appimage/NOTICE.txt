@@ -1,0 +1,10 @@
+MicroSlideStitcher AppImage notice
+==================================
+
+MicroSlideStitcher application code is MIT licensed; see usr/share/doc/MicroSlideStitcher/LICENSE.
+
+This AppImage additionally contains independently-built static ffmpeg and ffprobe binaries
+from johnvansickle.com. Those binaries are GPLv3 licensed. Their licence text is installed as
+usr/share/doc/MicroSlideStitcher/FFMPEG-GPL-3.0.txt. The GPL terms apply to the bundled ffmpeg
+and ffprobe binaries; they do not change the MIT licence of Michail Sofopoulos's application
+source code. Replacing or removing those two binaries leaves image-sequence mode usable.

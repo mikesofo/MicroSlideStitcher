@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=MicroSlideStitcher
+Comment=Stitch microscope video or overlapping still images into a panorama
+Exec=MicroSlideStitcher --gui
+Icon=MicroSlideStitcher
+Terminal=false
+Categories=Science;Graphics;MedicalSoftware;
+MimeType=video/mp4;video/quicktime;image/png;image/jpeg;image/tiff;

@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "micro-slide-stitcher"
+version = "0.7.0"
+description = "Stitch a smartphone-through-microscope-eyepiece video into one histology slide panorama"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+    {name = "Michail Sofopoulos", email = "msofopoulos@gmail.com"},
+]
+license = {text = "MIT"}
+dependencies = [
+    "numpy",
+    "opencv-contrib-python-headless",
+    "tifffile",
+    "matplotlib",
+]
+
+[project.optional-dependencies]
+# The desktop GUI is entirely optional; the CLI never imports PySide6.
+gui = ["PySide6>=6.5"]
+test = ["pytest", "pytest-qt"]
+build = ["pyinstaller>=6.22"]
+
+[project.scripts]
+micro-slide-stitcher = "micro_slide_stitcher.cli:main"
+micro-slide-stitcher-gui = "micro_slide_stitcher.gui:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v --durations=10"
