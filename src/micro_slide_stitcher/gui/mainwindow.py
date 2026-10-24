@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QFileDialog, QFormLayout, Q
 
 from .. import __version__
 from ..images import IMAGE_SUFFIXES, probe_image_sequence
+from ..stitch import convert_to_jpeg
 from .about import AboutDialog
 from .cli_spec import SPECS
 from .command import build_argv, command_string, wrapped_command_string
@@ -98,6 +99,22 @@ def _launch_detached(command: list[str]) -> bool:
         return proc.wait(timeout=REVEAL_CHECK_SECONDS) == 0
     except subprocess.TimeoutExpired:
         return True
+
+
+class JpegExportThread(QThread):
+    """Convert a finished panorama to JPEG off the GUI thread (no restitching)."""
+    done = Signal(dict)
+    failed = Signal(str)
+
+    def __init__(self, src: Path, dst: Path, quality: int, parent=None) -> None:
+        super().__init__(parent)
+        self.src, self.dst, self.quality = Path(src), Path(dst), int(quality)
+
+    def run(self) -> None:  # noqa: D102 - QThread entry point
+        try:
+            self.done.emit(convert_to_jpeg(self.src, self.dst, self.quality))
+        except Exception as exc:  # pragma: no cover - reported in the GUI
+            self.failed.emit(f"{type(exc).__name__}: {exc}")
 
 
 class PathRevealThread(QThread):
@@ -562,22 +579,32 @@ class MainWindow(QMainWindow):
         self.btn_full_res.setToolTip("Replace the fast preview PNG with the real output file "
                                      "(TIFF/PNG). Large panoramas take a moment; loading "
                                      "happens in the background.")
+        self.btn_jpeg = QPushButton("Save as JPEG…", w)
+        self.btn_jpeg.setToolTip("Save the panorama shown below as a JPEG for sharing, at the "
+                                 "JPEG quality set under Advanced settings. Converts the "
+                                 "finished file; nothing is stitched again.")
         self.btn_report = QPushButton("Open report.html", w)
         self.btn_report.setToolTip("Open the run's HTML report in your normal web browser")
         self.btn_folder = QPushButton("Open folder", w)
         self.btn_folder.setToolTip("Open the folder that contains the panorama file(s)")
-        for b, slot in ((self.btn_fit, lambda: self.panorama.view.fit_to_window()),
-                        (self.btn_11, lambda: self.panorama.view.zoom_one_to_one()),
-                        (self.btn_zin, lambda: self.panorama.view.zoom_by(1.25)),
-                        (self.btn_zout, lambda: self.panorama.view.zoom_by(1 / 1.25)),
-                        (self.btn_full_res, self.load_full_resolution),
-                        (self.btn_report, self.open_report),
-                        (self.btn_folder, self.open_output_folder)):
+        # two rows: viewing controls, then what to do with the file - one row no longer
+        # fits all eight buttons at 1280 px without cutting labels
+        files = QHBoxLayout()
+        files.setSpacing(7)
+        for row, b, slot in ((bar, self.btn_fit, lambda: self.panorama.view.fit_to_window()),
+                             (bar, self.btn_11, lambda: self.panorama.view.zoom_one_to_one()),
+                             (bar, self.btn_zin, lambda: self.panorama.view.zoom_by(1.25)),
+                             (bar, self.btn_zout, lambda: self.panorama.view.zoom_by(1 / 1.25)),
+                             (files, self.btn_full_res, self.load_full_resolution),
+                             (files, self.btn_jpeg, lambda: self.save_as_jpeg()),
+                             (files, self.btn_report, self.open_report),
+                             (files, self.btn_folder, self.open_output_folder)):
             b.clicked.connect(slot)
             # never let a label be elided, even in the 1280 px-wide layout
             b.setMinimumWidth(b.sizeHint().width())
-            bar.addWidget(b)
+            row.addWidget(b)
         bar.addStretch(1)
+        files.addStretch(1)
 
         seg_row = QHBoxLayout()
         seg_row.setSpacing(7)
@@ -608,6 +635,7 @@ class MainWindow(QMainWindow):
         v.addLayout(seg_row)
         v.addWidget(self.lbl_segment)
         v.addLayout(bar)
+        v.addLayout(files)
         v.addWidget(self.panorama, 1)
         return w
 
@@ -750,12 +778,14 @@ class MainWindow(QMainWindow):
             f"{meta.get('codec', '?')}  ({meta.get('pix_fmt', '?')})")
         self.meta_labels["frames"].setText(str(meta.get("frame_count_estimate", "?")))
         self.meta_labels["audio"].setText("yes" if meta.get("has_audio") else "no")
-        fps = float(self.settings_panel.values().get("--sampling-fps") or 0)
-        n = int(dur * fps)
-        self._status(
-            f"{Path(str(meta.get('path', ''))).name}: {meta.get('width')}×{meta.get('height')}, "
-            f"{meta.get('fps', 0):.2f} fps, {dur:.1f} s — about {n} frames will be sampled at "
-            f"{fps:g} fps.")
+        values = self.settings_panel.values()
+        head = (f"{Path(str(meta.get('path', ''))).name}: {meta.get('width')}×{meta.get('height')}, "
+                f"{meta.get('fps', 0):.2f} fps, {dur:.1f} s")
+        if values.get("--frame-selection", "motion") == "fixed":
+            fps = float(values.get("--sampling-fps") or 0)
+            self._status(f"{head} — about {int(dur * fps)} frames will be sampled at {fps:g} fps.")
+        else:
+            self._status(f"{head} — every frame is checked; blurred frames are skipped.")
 
     def _on_metadata_failed(self, message: str) -> None:
         for lab in self.meta_labels.values():
@@ -1122,6 +1152,47 @@ class MainWindow(QMainWindow):
             return
         seg = self.results.segments[self.cmb_segment.currentIndex()]
         self._load_image(seg.output, f"full-resolution panorama of segment {seg.rank}")
+
+    def save_as_jpeg(self, target: str | Path | None = None) -> None:
+        """Convert the current segment's full-resolution panorama to JPEG."""
+        if self.results is None or not self.results.segments:
+            self._show_error("There is no panorama yet — run the pipeline first.")
+            return
+        seg = self.results.segments[max(0, self.cmb_segment.currentIndex())]
+        src = Path(seg.output)
+        if not src.exists():
+            self._show_error(f"The panorama file {src} does not exist any more.")
+            return
+        if target is None:
+            suggestion = str(src.with_suffix(".jpg"))
+            target, _ = QFileDialog.getSaveFileName(self, "Save panorama as JPEG", suggestion,
+                                                    "JPEG image (*.jpg *.jpeg)")
+            if not target:
+                return
+        dst = Path(target)
+        if dst.suffix.lower() not in (".jpg", ".jpeg"):
+            dst = dst.with_suffix(".jpg")
+        quality = int(self.settings_panel.values().get("--jpeg-quality") or 90)
+        self.btn_jpeg.setEnabled(False)
+        self._status(f"Saving {dst.name} (JPEG quality {quality})…")
+        self._jpeg = JpegExportThread(src, dst, quality, self)
+        self._jpeg.done.connect(self._on_jpeg_done)
+        self._jpeg.failed.connect(self._on_jpeg_failed)
+        self._jpeg.start()
+
+    def _on_jpeg_done(self, info: dict) -> None:
+        self.btn_jpeg.setEnabled(True)
+        msg = (f"Saved JPEG {info['path']} ({info['width']}×{info['height']} px, quality "
+               f"{info['quality']}, {info['bytes'] / 1e6:.1f} MB)")
+        if info.get("reduced"):
+            msg += " — reduced to fit JPEG's 65,500 px limit; the original is unchanged"
+        self.log_pane.append_line(msg, "INFO")
+        self._status(msg, 10000)
+
+    def _on_jpeg_failed(self, message: str) -> None:
+        self.btn_jpeg.setEnabled(True)
+        self._show_error(f"Could not save the JPEG: {message}")
+        self.log_pane.append_line(f"JPEG export failed: {message}", "ERROR")
 
     def open_report(self) -> None:
         if self.results is None or self.results.report_html is None:

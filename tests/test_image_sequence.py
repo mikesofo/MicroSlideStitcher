@@ -106,7 +106,7 @@ def test_temporal_normalization_is_usage_error_for_images(synthetic_images, tmp_
 
 
 def test_image_registration_matches_equivalent_video(synthetic_images, tmp_path):
-    common = ["--sampling-fps", "2", "--normalize", "none", "--blur-threshold", "5",
+    common = ["--frame-selection", "fixed", "--sampling-fps", "2", "--normalize", "none", "--blur-threshold", "5",
               "--min-inliers", "20"]
     rc = main(["--input", str(synthetic_images["video"]), "--output", str(tmp_path / "video.png"),
                "--diagnostics", str(tmp_path / "video_diag")] + common)

@@ -42,7 +42,7 @@ import cv2
 import numpy as np
 
 from .logging_utils import get_logger
-from .register import (PairResult, RegistrationLimits, Segment, _draw_matches, _match,
+from .register import (overlap_check, PairResult, RegistrationLimits, Segment, _draw_matches, _match,
                        _reproj_error, _validate, decompose, detect)
 
 #: Identifier written into summary.json for the optimiser that produced the solution.
@@ -63,6 +63,9 @@ class BundleLimits:
     max_iterations: int = 200        # optimiser iteration cap
     max_seconds: float = 120.0       # wall-clock cap for discovery + optimisation
     huber_delta_px: float = 3.0      # robust loss knee, in pixels
+    translation_only: bool = True    # shift-only refinement: the slide is never rotated and
+                                     # the magnification is fixed, and the similarity model
+                                     # can shrink frames to fake a better fit (0.7.0 bug)
     max_shift_frac: float = 0.5      # a refinement may move a frame by at most this
                                      # fraction of the frame diagonal; more than that is a
                                      # re-solve, not a refinement, and is not trusted
@@ -216,6 +219,10 @@ def match_correspondences(img_a: np.ndarray, img_b: np.ndarray, idx_a: int, idx_
             inl = int(mask.sum()) if mask is not None else 0
             err = _reproj_error(src, dst, np.asarray(M), mask) if M is not None else float("nan")
             ok, reason = _validate(M, inl, len(good), err, img_a.shape, limits)
+            if ok:
+                ok, reason, ov = overlap_check(M, src, mask, img_a, img_b, limits)
+                for key, val in ov.items():
+                    setattr(res, key, val)
             res.inliers = inl
             res.inlier_ratio = round(inl / max(len(good), 1), 4)
             res.mean_reproj_error = round(err, 4) if not math.isnan(err) else float("nan")
@@ -729,7 +736,12 @@ def bundle_adjust(segment: Segment, detector: str, limits: RegistrationLimits,
     # 3. optimise: OpenCV first, then the numpy LM ------------------------------------
     t_opt = time.time()
     tried: list[tuple[str, list[np.ndarray], int, float]] = []
-    solution, iters, why = _ba_opencv(chained, obs, (w, h), blimits)
+    if blimits.translation_only:
+        solution, iters, why = None, 0, ("skipped: shift-only refinement (the OpenCV "
+                                         "adjuster always fits scale and rotation, and "
+                                         "cannot be stopped at the time limit)")
+    else:
+        solution, iters, why = _ba_opencv(chained, obs, (w, h), blimits)
     if solution is None:
         log.warning("OpenCV bundle adjuster unusable (%s); trying the built-in "
                     "Levenberg-Marquardt", why)
@@ -748,7 +760,10 @@ def bundle_adjust(segment: Segment, detector: str, limits: RegistrationLimits,
         # similarity model is only worth taking if it buys a clearly better fit - see the
         # margin rule below.  Chasing the last few per cent of reprojection error with a
         # richer model is exactly how a solution ends up with lower error and worse geometry.
-        for label, model in ((OPTIMISER_NUMPY_T, "translation"), (OPTIMISER_NUMPY, "similarity")):
+        models = [(OPTIMISER_NUMPY_T, "translation")]
+        if not blimits.translation_only:
+            models.append((OPTIMISER_NUMPY, "similarity"))
+        for label, model in models:
             alt, alt_iters, alt_why = _ba_numpy(chained, obs, blimits, deadline, limits,
                                                 model=model)
             if alt is None:

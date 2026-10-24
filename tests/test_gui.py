@@ -649,7 +649,8 @@ def test_multi_segment_run_produces_per_segment_views(qtbot, window, gap_video_d
     qtbot.waitUntil(lambda: bool(window.metadata), timeout=30_000)
     window.ed_output.setText(str(tmp_path / "split.png"))
     window._derive_diagnostics()
-    window.settings_panel.set_values({"--sampling-fps": 2.0, "--blur-threshold": 5.0,
+    window.settings_panel.set_values({"--frame-selection": "fixed",
+                                      "--sampling-fps": 2.0, "--blur-threshold": 5.0,
                                       "--normalize": "none", "--min-inliers": 20})
 
     with qtbot.waitSignal(window.runFinished, timeout=RUN_TIMEOUT_MS) as sig:

@@ -62,6 +62,9 @@ SPECS: list[FlagSpec] = [
         "sweep": "Single sweep \u2014 one continuous pan",
         "serpentine": "Serpentine \u2014 back and forth in rows "
                       "(slower, corrects drift)"}),
+    FlagSpec("--frame-selection", "Frames taken from video", CHOICE, choice_labels={
+        "motion": "Sharpest per movement - skips blurred frames",
+        "fixed": "Fixed rate (sampling rate below)"}),
     FlagSpec("--sampling-fps", "Sampling rate", FLOAT,
              minimum=0.1, maximum=30.0, step=0.5, decimals=2, suffix=" fps"),
     FlagSpec("--image-order", "Image ordering", CHOICE),
@@ -74,9 +77,15 @@ SPECS: list[FlagSpec] = [
     FlagSpec("--max-dimension", "Downscale long edge to", OPT_INT,
              minimum=240, maximum=8000, step=160, unset_text="off (full resolution)",
              suffix=" px"),
+    FlagSpec("--jpeg-copy", "JPEG copy for sharing", CHOICE, choice_labels={
+        "yes": "Also save a JPEG copy (.jpg)", "no": "Do not save a JPEG copy"}),
     FlagSpec("--blend", "Blending mode", CHOICE, advanced=True),
+    FlagSpec("--jpeg-quality", "JPEG quality", INT, advanced=True, minimum=1, maximum=100,
+             step=5),
     FlagSpec("--dedup-threshold", "Near-duplicate threshold", FLOAT, advanced=True,
              minimum=0.0, maximum=1.0, step=0.001, decimals=3),
+    FlagSpec("--min-overlap", "Minimum overlap, horizontal AND vertical", FLOAT,
+             advanced=True, minimum=0.0, maximum=0.9, step=0.01, decimals=2),
     FlagSpec("--min-inliers", "Minimum RANSAC inliers", INT, advanced=True,
              minimum=4, maximum=1000, step=5),
     FlagSpec("--min-segment-frames", "Minimum frames per written segment", INT,

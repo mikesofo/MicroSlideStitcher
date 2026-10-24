@@ -1,6 +1,50 @@
 MicroSlideStitcher changelog
 ============================
 
+0.8.1 — 2026-10-24
+- A JPEG copy for sharing is saved next to every TIFF or PNG panorama (same name, .jpg; also for
+  extra pieces). --jpeg-copy no turns it off. A 3566 x 8501 px scan: 43.5 MB TIFF, 3.5 MB JPEG.
+- --jpeg-quality (1-100, default 90) sets the quality of the copy and of a .jpg --output
+  (previously fixed at 95).
+- GUI: "JPEG copy for sharing" setting, "JPEG quality" under Advanced settings, and a
+  "Save as JPEG..." button in the Panorama tab that converts the finished panorama - or one from
+  an earlier run - without stitching again. The Panorama tab buttons are now in two rows.
+- Panoramas larger than JPEG allows (65,500 px per side) get a reduced JPEG and a warning; the
+  TIFF/PNG stays full size.
+- The unsupported-extension error now lists .jpg and .jpeg.
+
+0.8.0 — 2026-10-24
+- Content-based reconnection: when the chain still breaks into pieces (the slide moved too fast,
+  or every frame of a turn was blurred), every frame of every piece is described once by its
+  SIFT features and votes for the frames of the other pieces it resembles, so frames showing
+  the same tissue are found regardless of when they were recorded - the row above, or the
+  same strip on the way back. Each candidate must pass the normal matcher and the full overlap
+  check. Two pieces are merged only when at least two links, using different frames on both
+  sides, agree on where one piece sits relative to the other. --no-reconnect turns it off;
+  every candidate, link and merge is written to reconnect.json and summary.json.
+- After a reconnection all frame positions are refined together (shift-only bundle
+  adjustment, also in single-sweep mode), so overlapping passes line up.
+
+0.7.1 — 2026-10-24
+- Frames are now taken from a video by sharpness and movement (--frame-selection motion, the
+  new default): every frame is read once at small size, sharpness is measured separately for
+  horizontal and vertical detail on the original frame (before CLAHE, which inflated the score
+  of blurred frames), each frame is compared with the sharp frames around it, and the sharpest
+  non-blurred frame of each stretch of movement is kept. Blurred frames - including motion blur
+  from a moving slide - are skipped. --frame-selection fixed restores 0.7.0 sampling. Every
+  decoded frame and the reason it was kept or skipped is written to frame_selection.csv.
+- Every merge of two frames - consecutive, bridged, row turn, segment rejoin and loop closure -
+  must now pass one overlap check that is never relaxed: at least --min-overlap (10 %) of the
+  frame shared horizontally AND vertically, the matched points spread over at least
+  --min-overlap-spread (15 %) of the shared width and height, and the two frames correlating at
+  least --min-overlap-agreement (0.60) inside the shared area. Previously a rejoin could join
+  frames with no overlap at all (translation up to 2 frames).
+- Bundle adjustment refines shifts only. The similarity model could shrink frames to lower its
+  own error score while making the panorama worse, and the OpenCV adjuster could not be stopped
+  at the time limit; neither is used any more.
+- GUI: "Frames taken from video" and "Minimum overlap" settings; the status line describes the
+  frame selection actually used.
+
 0.7.0 — 2026-08-25
 - Added --scan-mode {sweep,serpentine} (default sweep, byte-identical to 0.6.0) and global bundle
   adjustment behind --bundle-adjust / --no-bundle-adjust, with --ba-max-iterations,

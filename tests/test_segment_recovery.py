@@ -14,7 +14,7 @@ from micro_slide_stitcher.register import Segment, merge_segments
 # The gap videos step 90 px per position with one 290 px jump; a tight
 # --max-translation-frac makes that jump unregistrable for the adjacent-pair path.
 TIGHT = ["--max-translation-frac", "0.5"]
-COMMON = ["--sampling-fps", "2", "--blur-threshold", "5", "--normalize", "none",
+COMMON = ["--frame-selection", "fixed", "--sampling-fps", "2", "--blur-threshold", "5", "--normalize", "none",
           "--min-inliers", "20"]
 
 
@@ -83,7 +83,7 @@ def test_no_rejoin_restores_old_behaviour(gap_video_overlapping, tmp_path):
     out = tmp_path / "pano.png"
     diag = tmp_path / "diag_norejoin"
     summary = _run(gap_video_overlapping["video"], out, diag,
-                   TIGHT + ["--no-rejoin", "--min-segment-frames", "1000"])
+                   TIGHT + ["--no-rejoin", "--no-reconnect", "--min-segment-frames", "1000"])
     assert summary["counts"]["segments"] == 2
     assert summary["counts"]["segments_written"] == 1
     assert summary["counts"]["rejoin_attempts"] == 0
@@ -97,7 +97,7 @@ def test_no_rejoin_writes_every_segment(gap_video_overlapping, tmp_path):
     """Same broken chain, but multi-segment output is on: both pieces must be written."""
     out = tmp_path / "pano.png"
     diag = tmp_path / "diag_norejoin_multi"
-    summary = _run(gap_video_overlapping["video"], out, diag, TIGHT + ["--no-rejoin"])
+    summary = _run(gap_video_overlapping["video"], out, diag, TIGHT + ["--no-rejoin", "--no-reconnect"])
     assert summary["counts"]["segments"] == 2
     assert summary["counts"]["segments_written"] == 2
     assert out.exists() and (tmp_path / "pano_seg02.png").exists()
@@ -163,6 +163,7 @@ def test_single_segment_run_is_unchanged(synthetic_video, tmp_path):
     out = tmp_path / "pano.png"
     diag = tmp_path / "diag_single"
     rc = main(["--input", str(synthetic_video["video"]), "--output", str(out),
+               "--frame-selection", "fixed",
                "--sampling-fps", "2", "--blur-threshold", "10", "--normalize", "clahe",
                "--diagnostics", str(diag)])
     assert rc == 0

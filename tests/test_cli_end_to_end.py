@@ -45,6 +45,7 @@ def test_end_to_end_full_resolution(synthetic_video, tmp_path):
     out = tmp_path / "pano.tif"
     diag = tmp_path / "diag"
     rc = main(["--input", str(synthetic_video["video"]), "--output", str(out),
+               "--frame-selection", "fixed",
                "--sampling-fps", "2", "--detector", "orb", "--normalize", "clahe",
                "--blur-threshold", "10", "--diagnostics", str(diag)])
     assert rc == 0, "pipeline returned failure"

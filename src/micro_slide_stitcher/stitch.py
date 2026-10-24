@@ -216,9 +216,62 @@ def auto_crop(pano: np.ndarray, mask: np.ndarray, min_coverage_frac: float = 0.0
     return pano[y0:y1, x0:x1], mask[y0:y1, x0:x1], (x0, y0, x1, y1)
 
 
+#: JPEG cannot store an image wider or taller than 65,535 px; stay a little below it.
+JPEG_MAX_SIDE = 65500
+
+
+def save_jpeg(img_bgr: np.ndarray, path: Path, quality: int = 90) -> dict:
+    """Write a JPEG, reducing the image only if it exceeds the JPEG size limit."""
+    log = get_logger()
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    h, w = img_bgr.shape[:2]
+    reduced = max(h, w) > JPEG_MAX_SIDE
+    if reduced:
+        scale = JPEG_MAX_SIDE / max(h, w)
+        img_bgr = cv2.resize(img_bgr, (max(1, int(w * scale)), max(1, int(h * scale))),
+                             interpolation=cv2.INTER_AREA)
+        log.warning("the panorama (%dx%d) is larger than JPEG allows (%d px per side); the "
+                    "JPEG is saved reduced to %dx%d - the full-size image is unaffected",
+                    w, h, JPEG_MAX_SIDE, img_bgr.shape[1], img_bgr.shape[0])
+    if img_bgr.ndim == 3 and img_bgr.shape[2] == 4:
+        img_bgr = cv2.cvtColor(img_bgr, cv2.COLOR_BGRA2BGR)
+    if not cv2.imwrite(str(path), img_bgr, [cv2.IMWRITE_JPEG_QUALITY, int(quality)]):
+        raise OSError(f"could not write JPEG {path}")
+    return {"path": str(path), "width": int(img_bgr.shape[1]), "height": int(img_bgr.shape[0]),
+            "reduced": reduced, "quality": int(quality),
+            "bytes": path.stat().st_size}
+
+
+def read_panorama(path: Path) -> np.ndarray:
+    """Read a panorama written by save_panorama (TIFF, PNG or JPEG) as BGR."""
+    path = Path(path)
+    if path.suffix.lower() in (".tif", ".tiff"):
+        import tifffile
+        img = tifffile.imread(str(path))
+        if img.ndim == 2:
+            return cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+        if img.shape[2] == 4:
+            return cv2.cvtColor(img, cv2.COLOR_RGBA2BGR)
+        return cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+    img = cv2.imread(str(path), cv2.IMREAD_COLOR)
+    if img is None:
+        raise OSError(f"could not read {path}")
+    return img
+
+
+def convert_to_jpeg(src: Path, dst: Path, quality: int = 90) -> dict:
+    """Convert an existing panorama file (TIFF/PNG/JPEG) to JPEG without restitching."""
+    return save_jpeg(read_panorama(src), dst, quality)
+
+
 def save_panorama(pano: np.ndarray, out_path: Path, preview_path: Path | None = None,
-                  preview_max: int = 2000) -> dict:
-    """Save the panorama honouring the --output extension; always also write a PNG preview."""
+                  preview_max: int = 2000, jpeg_quality: int = 90,
+                  jpeg_copy: bool = False) -> dict:
+    """Save the panorama honouring the --output extension; always also write a PNG preview.
+
+    With ``jpeg_copy`` a JPEG for sharing is written next to a TIFF/PNG output
+    (same name, .jpg)."""
     log = get_logger()
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -231,12 +284,23 @@ def save_panorama(pano: np.ndarray, out_path: Path, preview_path: Path | None = 
     elif ext == ".png":
         cv2.imwrite(str(out_path), pano, [cv2.IMWRITE_PNG_COMPRESSION, 6])
     elif ext in (".jpg", ".jpeg"):
-        cv2.imwrite(str(out_path), pano, [cv2.IMWRITE_JPEG_QUALITY, 95])
+        info = save_jpeg(pano, out_path, jpeg_quality)
+        if info["reduced"]:
+            written["jpeg_reduced"] = f"{info['width']}x{info['height']}"
     else:
-        raise ValueError(f"unsupported output extension '{ext}' (use .tif, .tiff or .png)")
+        raise ValueError(f"unsupported output extension '{ext}' (use .tif, .tiff, .png, "
+                         ".jpg or .jpeg)")
     written["panorama"] = str(out_path)
     log.info("Wrote panorama %s (%dx%d, %.1f MB)", out_path, pano.shape[1], pano.shape[0],
              out_path.stat().st_size / 1e6)
+
+    if jpeg_copy and ext not in (".jpg", ".jpeg"):
+        info = save_jpeg(pano, out_path.with_suffix(".jpg"), jpeg_quality)
+        written["jpeg"] = info["path"]
+        if info["reduced"]:
+            written["jpeg_reduced"] = f"{info['width']}x{info['height']}"
+        log.info("Wrote JPEG copy for sharing %s (%dx%d, quality %d, %.1f MB)", info["path"],
+                 info["width"], info["height"], info["quality"], info["bytes"] / 1e6)
 
     if preview_path is not None:
         scale = min(1.0, preview_max / max(pano.shape[1], pano.shape[0]))

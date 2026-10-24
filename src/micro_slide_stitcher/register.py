@@ -32,6 +32,11 @@ class PairResult:
     bridged: bool = False
     rejoin: bool = False           # produced by the wide-baseline segment rejoin pass
     viz: str | None = None
+    overlap_x: float = float("nan")    # shared width / frame width
+    overlap_y: float = float("nan")    # shared height / frame height
+    spread_x: float = float("nan")     # matched points' extent / shared width
+    spread_y: float = float("nan")     # matched points' extent / shared height
+    overlap_ncc: float = float("nan")  # image agreement inside the shared rectangle
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -73,6 +78,12 @@ class RegistrationLimits:
     ransac_thresh: float = 3.0
     lowe_ratio: float = 0.75
     max_reproj_error: float = 6.0
+    # Overlap check applied to EVERY merge (consecutive, bridged, row turn, rejoin, loop
+    # closure).  Never relaxed for any special case.  None disables a check (0.7.0 rules).
+    min_overlap_frac: float | None = 0.10   # in x AND in y
+    min_spread_frac: float | None = 0.15    # matched points must cover this much of the
+                                            # shared width AND height
+    min_overlap_ncc: float | None = 0.60    # images must agree inside the shared rectangle
 
 
 _DETECTOR_CACHE: dict[str, object] = {}
@@ -156,6 +167,78 @@ def _validate(M, inliers, matches, err, shape, limits: RegistrationLimits) -> tu
     return True, "accepted"
 
 
+def overlap_check(M, src: np.ndarray, mask, img_a: np.ndarray, img_b: np.ndarray,
+                  limits: RegistrationLimits) -> tuple[bool, str, dict]:
+    """The overlap check every merge must pass.
+
+    With the slide moving under a fixed camera, two frames differ by a shift (dx, dy) and
+    share an upright rectangle that is ``w - |dx|`` wide and ``h - |dy|`` tall.  We require
+
+    1. that rectangle to be at least ``min_overlap_frac`` of the frame width AND height,
+    2. the matched points to be spread over a fair part of its width AND height - a clump
+       on one repeated structure is not evidence that the whole frames line up, and
+    3. the two images to actually look alike inside it once B is shifted onto A
+       (zero-mean normalised correlation at quarter size).
+
+    Returns (ok, reason, measured values)."""
+    h, w = img_a.shape[:2]
+    Mn = np.asarray(M, dtype=np.float64)
+    if Mn.shape == (3, 3):
+        Mn = Mn[:2] / Mn[2, 2]
+    tx, ty = float(Mn[0, 2]), float(Mn[1, 2])
+    ox, oy = (w - abs(tx)) / w, (h - abs(ty)) / h
+    vals = {"overlap_x": round(ox, 4), "overlap_y": round(oy, 4)}
+    f = limits.min_overlap_frac
+    if f is not None and (ox < f or oy < f):
+        return False, (f"too little overlap: {ox:.0%} of the width and {oy:.0%} of the height "
+                       f"are shared (need at least {f:.0%} in BOTH directions)"), vals
+    # shared rectangle in frame-A coordinates
+    x0, x1 = max(0.0, -tx), min(float(w), w - tx)
+    y0, y1 = max(0.0, -ty), min(float(h), h - ty)
+    pts = src.reshape(-1, 2)
+    if mask is not None:
+        pts = pts[mask.ravel().astype(bool)]
+    if len(pts) >= 2 and x1 > x0 and y1 > y0:
+        px = np.percentile(pts[:, 0], [5, 95])
+        py = np.percentile(pts[:, 1], [5, 95])
+        sx = float((px[1] - px[0]) / (x1 - x0))
+        sy = float((py[1] - py[0]) / (y1 - y0))
+    else:
+        sx = sy = 0.0
+    vals.update(spread_x=round(sx, 4), spread_y=round(sy, 4))
+    sp = limits.min_spread_frac
+    if sp is not None and (sx < sp or sy < sp):
+        return False, (f"matched points are clumped: they cover {sx:.0%} of the shared width "
+                       f"and {sy:.0%} of the shared height (need at least {sp:.0%} of both)"), vals
+    if True:  # always measured (cheap); enforced only when min_overlap_ncc is set
+        q = 0.25
+        S = np.array([[q, 0, 0], [0, q, 0], [0, 0, 1]], np.float64)
+        M3 = np.vstack([Mn, [0, 0, 1]])
+        to_a = S @ np.linalg.inv(M3) @ np.linalg.inv(S)   # quarter-size B -> quarter-size A
+        sw, sh = max(1, int(w * q)), max(1, int(h * q))
+        ga = cv2.resize(cv2.cvtColor(img_a, cv2.COLOR_BGR2GRAY) if img_a.ndim == 3 else img_a,
+                        (sw, sh), interpolation=cv2.INTER_AREA).astype(np.float32)
+        gb = cv2.resize(cv2.cvtColor(img_b, cv2.COLOR_BGR2GRAY) if img_b.ndim == 3 else img_b,
+                        (sw, sh), interpolation=cv2.INTER_AREA).astype(np.float32)
+        wb = cv2.warpAffine(gb, to_a[:2], (sw, sh), flags=cv2.INTER_LINEAR,
+                            borderMode=cv2.BORDER_CONSTANT, borderValue=-1)
+        valid = cv2.warpAffine(np.ones_like(gb), to_a[:2], (sw, sh), flags=cv2.INTER_NEAREST,
+                               borderMode=cv2.BORDER_CONSTANT, borderValue=0) > 0.5
+        valid = cv2.erode(valid.astype(np.uint8), np.ones((3, 3), np.uint8)).astype(bool)
+        if valid.sum() < 50:
+            ncc = 0.0
+        else:
+            a = ga[valid] - ga[valid].mean()
+            b = wb[valid] - wb[valid].mean()
+            den = float(np.linalg.norm(a) * np.linalg.norm(b))
+            ncc = float(a @ b / den) if den > 1e-6 else 0.0
+        vals["overlap_ncc"] = round(ncc, 4)
+        if limits.min_overlap_ncc is not None and ncc < limits.min_overlap_ncc:
+            return False, (f"the images do not agree inside the shared area (correlation "
+                           f"{ncc:.2f} < {limits.min_overlap_ncc:.2f}) - probably a false match"), vals
+    return True, "accepted", vals
+
+
 def register_pair(img_a: np.ndarray, img_b: np.ndarray, idx_a: int, idx_b: int,
                   detector: str = "orb", limits: RegistrationLimits | None = None,
                   allow_homography_fallback: bool = True,
@@ -194,6 +277,10 @@ def register_pair(img_a: np.ndarray, img_b: np.ndarray, idx_a: int, idx_b: int,
             inl = int(mask.sum()) if mask is not None else 0
             err = _reproj_error(src, dst, np.asarray(M), mask) if M is not None else float("nan")
             ok, reason = _validate(M, inl, len(good), err, img_a.shape, limits)
+            if ok:
+                ok, reason, ov = overlap_check(M, src, mask, img_a, img_b, limits)
+                for key, val in ov.items():
+                    setattr(res, key, val)
             res.inliers = inl
             res.inlier_ratio = round(inl / max(len(good), 1), 4)
             res.mean_reproj_error = round(err, 4) if not math.isnan(err) else float("nan")

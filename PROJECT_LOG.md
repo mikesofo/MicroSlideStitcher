@@ -416,3 +416,61 @@ once its scrollbar appeared).
 - Cancel leaves the partial `_work` directory and a `cancelled.txt` behind; nothing else is
   written.
 - No queue: one run at a time, and no batch mode.
+
+
+## Stage 15 — 0.7.1: motion-aware frame selection and the overlap check (2026-10-24)
+
+Tested on the user's own recording `testvid.mp4` (1920x1080, 30 fps, 28.6 s, skin with changes
+of direction). 0.7.0 split it into 3 pieces (14, 7, 34 frames); every sampled frame passed the
+blur check, including a motion-blurred one at 11.5 s (score 179 after CLAHE against a
+threshold of 10).
+
+- `keyframes.py`: every frame read once at 480 px; gradient energy across x and y on the
+  original frame; blurred = below 0.60 of the 80th-percentile sharpness within +/-1.5 s, or
+  >1.8x the local x/y detail ratio together with <0.85 sharpness (motion blur). Tissue texture is
+  naturally directional (median ratio 1.5 on this video), so an absolute ratio flagged sharp
+  frames. Position by summed frame-to-frame phase correlation (confidence ~0.95). Keep the
+  sharpest non-blurred frame 10-33 % of the frame away (up to 70 % if none is sharp).
+  860 frames read, 118 blurred (26 motion blur), 58 kept, 4 real gaps where the field moved up
+  to 1.5 frame heights while every frame was smeared.
+- `register.overlap_check`, called by every merge: overlap thresholds calibrated on this video.
+  Accepted pairs correlate 0.76-0.99 in the shared area; the same pairs misaligned by 25-85 px
+  0.53 at most; unrelated frames 0.38 at most -> threshold 0.60. A genuine 12 % vertical overlap
+  (103 inliers, correlation 0.94) set the overlap minimum at 10 %; glass in the field set the
+  spread minimum at 15 %.
+- Bundle adjustment shift-only (no similarity model, no OpenCV adjuster).
+- Result on testvid.mp4: 2 pieces (32 + 25 frames, 57 of 58 used), median inliers 1273 (0.7.0:
+  486), ~50 s at --max-dimension 960. The remaining split is a real gap at 11.43 s; the
+  recording returns over the same tissue, so the two pieces overlap - joining them needs the
+  content-based matching planned for 0.8.
+- Tests: 134 passed (123 + 11 new). Tests of fixed-rate behaviour pin --frame-selection fixed.
+
+
+## Stage 16 — 0.8.0: content-based reconnection of pieces (2026-10-24)
+
+On the user's testvid.mp4, 0.7.1 left two pieces (32 + 25 frames) that both cover the
+epidermis: the recording goes down and comes back up over the same skin.
+
+- `reconnect.py`: SIFT at half size, once per frame; each frame of piece B votes through a FLANN
+  index of piece A's features (ratio test 0.75, >= 8 votes, top 3 per frame, at most 2 slots
+  per frame, 40 candidates per pair of pieces). Candidates are registered with SIFT and must
+  pass every gate and the overlap check; the movement-between-frames limit does not apply to
+  content links. Merge only if >= 2 verified links using different frames on BOTH sides agree
+  on piece B's placement within 3 % of the frame diagonal; B is placed at the median.
+- testvid.mp4: 29 candidates, 29 verified, 25 independent links agree within 33 px -> one
+  57-frame panorama, verdict SUCCESSFUL. The 33 px spread showed up as a faint doubled
+  stratum corneum where the passes overlap, so after a reconnection the merged piece is
+  refined with shift-only bundle adjustment (170 loop pairs): mean reprojection error
+  4.08 -> 1.74 px, nuclei crisp in crops at four heights.
+- Safety: the disconnected synthetic video still gives 2 pieces; a test limits the
+  candidates to one link and checks nothing is merged.
+- Tests: 137 passed.
+
+
+## Stage 17 — 0.8.1: JPEG copy, quality, conversion (2026-10-24)
+
+testvid.mp4 full-resolution panorama 3566 x 8501: TIFF 43.5 MB; JPEG 2.9 MB (q85), 3.5 MB (q90),
+5.0 MB (q95), each written in about 0.1 s. Default quality 90. `stitch.save_jpeg` reduces
+images above 65,500 px per side (JPEG limit) with a warning; `convert_to_jpeg` reads TIFF/PNG/JPEG
+for the GUI's "Save as JPEG..." (off the GUI thread). The Panorama tab's eight buttons did not
+fit one row at 1280 px ("Open report.html" was cut off), so they are now two rows. Tests: 145.

@@ -19,6 +19,8 @@ from .diagnostics import (plot_camera_path, registration_stats, segment_pairs,
                           write_rejoin_attempts, write_transforms)
 from .bundle import BundleLimits, BundleResult, bundle_adjust, disabled_result
 from .extract import extract_frames, gate_frames
+from .keyframes import analyse_video, extract_selected
+from .reconnect import ReconnectResult, reconnect_segments
 from .images import IMAGE_SUFFIXES, extract_image_frames, is_image_path, probe_image_sequence
 from .logging_utils import setup_logger
 from .probe import MultimediaToolMissingError, ProbeError, probe_video, write_metadata
@@ -75,6 +77,18 @@ produce a panorama (diagnostics are still preserved).
 """
 
 
+def _write_selection(selection, diag: Path) -> dict[str, str]:
+    """frame_selection.csv: one row per decoded frame, why it was kept or skipped."""
+    import csv
+    path = diag / "frame_selection.csv"
+    rows = [s.to_dict() for s in selection.stats]
+    with path.open("w", newline="") as fh:
+        wr = csv.DictWriter(fh, fieldnames=list(rows[0].keys()))
+        wr.writeheader()
+        wr.writerows(rows)
+    return {"frame_selection_csv": str(path)}
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="python -m micro_slide_stitcher",
@@ -95,6 +109,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--sampling-fps", type=float, default=2.0,
                    help="frames sampled per second of video (default: %(default)s). "
                         "Raise for fast panning, lower for slow scans.")
+    p.add_argument("--frame-selection", choices=["motion", "fixed"], default="motion",
+                   help="how frames are taken from a video: motion = read every frame, skip "
+                        "blurred ones (including motion blur from a moving slide) and keep "
+                        "the sharpest frame per stretch of movement; fixed = 0.7.0 "
+                        "behaviour, --sampling-fps frames per second (default: %(default)s)")
     p.add_argument("--image-order", choices=["name", "mtime"], default="name",
                    help="image-sequence order: name = natural filename order (IMG_2 before "
                         "IMG_10), mtime = modification time (default: %(default)s)")
@@ -183,6 +202,25 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--max-translation-frac", type=float, default=0.92,
                    help="reject pairs translating more than this fraction of the frame "
                         "(i.e. too little overlap) (default: %(default)s)")
+    p.add_argument("--min-overlap", type=float, default=0.10, metavar="F",
+                   help="every merge of two frames needs at least this fraction of the frame "
+                        "shared horizontally AND vertically (default: %(default)s; 0 "
+                        "disables the overlap check, as in 0.7.0)")
+    p.add_argument("--min-overlap-spread", type=float, default=0.15, metavar="F",
+                   help="the matched points must cover at least this fraction of the shared "
+                        "width AND height (default: %(default)s; 0 disables)")
+    p.add_argument("--min-overlap-agreement", type=float, default=0.60, metavar="C",
+                   help="the two frames must correlate at least this well inside the shared "
+                        "area (default: %(default)s; 0 disables)")
+    p.add_argument("--jpeg-copy", choices=["yes", "no"], default="yes",
+                   help="also save a JPEG copy for sharing next to a TIFF or PNG panorama "
+                        "(same name, .jpg) (default: %(default)s)")
+    p.add_argument("--jpeg-quality", type=int, default=90, metavar="Q",
+                   help="JPEG quality 1-100 for the JPEG copy or a .jpg --output "
+                        "(default: %(default)s; 90 looks identical at normal viewing)")
+    p.add_argument("--no-reconnect", action="store_true",
+                   help="do not try to reconnect separate pieces by matching their content "
+                        "(frames showing the same tissue, whenever they were recorded)")
     p.add_argument("--no-homography-fallback", action="store_true",
                    help="never fall back to a full homography (similarity model only)")
     p.add_argument("--no-bridge", action="store_true",
@@ -256,7 +294,8 @@ def _verdict(counts: dict, stats: dict) -> tuple[str, list[str]]:
         notes.append(
             f"the scan could NOT be chained into a single panorama: it is written as "
             f"{n_written} separate pieces ({counts['segments']} disconnected segment(s) "
-            f"remained after wide-baseline rejoin). The break(s) happen where consecutive "
+            f"remained after wide-baseline rejoin and content-based reconnection). The break(s) "
+            f"happen where consecutive "
             f"sampled frames stopped overlapping (fast pan and/or defocus); the rejoin pass "
             f"could not find a plausible transform across them either - see "
             f"rejoin_attempts.json. Pan more slowly or raise --sampling-fps to avoid this.")
@@ -302,7 +341,8 @@ def run(args: argparse.Namespace) -> int:
         max_extra_pairs=args.ba_max_pairs,
         max_iterations=args.ba_max_iterations,
         max_seconds=args.ba_max_seconds,
-        max_shift_frac=args.ba_max_shift_frac)
+        max_shift_frac=args.ba_max_shift_frac,
+        translation_only=True)
     ba_off_reason = (
         "bundle adjustment is off: --scan-mode sweep and --bundle-adjust was not given"
         if not args.no_bundle_adjust else
@@ -352,6 +392,16 @@ def run(args: argparse.Namespace) -> int:
                             "selected with --image-stride.")
             frames = extract_image_frames(args.input, workdir, args.image_order,
                                           args.image_stride, args.max_dimension)
+        elif args.frame_selection == "motion":
+            selection = analyse_video(Path(args.input), meta)
+            outputs.update(_write_selection(selection, diag))
+            for g in selection.gaps:
+                warnings.append(
+                    f"no sharp frame overlaps the previous one between {g['from_s']:.2f} s "
+                    f"and {g['to_s']:.2f} s: the slide moved too fast there, or every frame "
+                    "was blurred; the scan may split at that point")
+            frames = extract_selected(Path(args.input), workdir, selection, args.normalize,
+                                      args.max_dimension)
         else:
             frames = extract_frames(Path(args.input), workdir, args.sampling_fps, args.normalize,
                                    args.max_dimension)
@@ -386,7 +436,10 @@ def run(args: argparse.Namespace) -> int:
         limits = RegistrationLimits(min_inliers=args.min_inliers,
                                     min_inlier_ratio=args.min_inlier_ratio,
                                     max_rotation_deg=args.max_rotation_deg,
-                                    max_translation_frac=args.max_translation_frac)
+                                    max_translation_frac=args.max_translation_frac,
+                                    min_overlap_frac=args.min_overlap or None,
+                                    min_spread_frac=args.min_overlap_spread or None,
+                                    min_overlap_ncc=args.min_overlap_agreement or None)
         matches_dir.mkdir(parents=True, exist_ok=True)
         segments, pairs, wr, rejoin_attempts = build_chain(
             accepted, args.detector, limits, matches_dir, max_viz=args.max_viz,
@@ -398,6 +451,28 @@ def run(args: argparse.Namespace) -> int:
             turn_translation_frac=(args.serpentine_turn_translation_frac
                                    if serpentine else None))
         warnings += wr
+        reconnect = ReconnectResult(attempted=False)
+        if len(segments) > 1 and not args.no_reconnect:
+            t_rc = time.time()
+            n_before = len(segments)
+            segments, reconnect, wrc = reconnect_segments(segments, limits)
+            warnings += wrc
+            timing["reconnect_s"] = round(time.time() - t_rc, 3)
+            (diag / "reconnect.json").write_text(json.dumps(reconnect.to_dict(), indent=2),
+                                                 encoding="utf-8")
+            outputs["reconnect_json"] = str(diag / "reconnect.json")
+            log.info("content-based reconnection: %d piece(s) -> %d", n_before, len(segments))
+            if reconnect.merges:
+                warnings = [w for w in warnings if not w.startswith("registration produced")]
+                if not args.no_bundle_adjust:
+                    # The reconnected pieces were placed from a handful of links; solve all
+                    # frame positions together (shift only) so overlapping passes line up.
+                    if not ba_enabled:
+                        log.info("pieces were reconnected: refining all frame positions "
+                                 "together (shift-only bundle adjustment)")
+                    ba_enabled = True
+                    blimits.max_extra_pairs = max(blimits.max_extra_pairs,
+                                                  3 * segments[0].length)
         outputs.update(write_transforms(pairs, segments, diag))
         if rejoin_attempts:
             outputs.update(write_rejoin_attempts(rejoin_attempts, diag))
@@ -499,8 +574,17 @@ def run(args: argparse.Namespace) -> int:
             log.info("Segment %d/%d (%d frames): auto-cropped to %dx%d (box %s), "
                      "coverage %.1f%%", rank, len(to_stitch), seg.length,
                      pano.shape[1], pano.shape[0], box, 100 * coverage)
-            written = save_panorama(pano, seg_out, diag / preview_name)
+            written = save_panorama(pano, seg_out, diag / preview_name,
+                                    jpeg_quality=args.jpeg_quality,
+                                    jpeg_copy=args.jpeg_copy == "yes")
             outputs[f"panorama{suffix}"] = written["panorama"]
+            if "jpeg" in written:
+                outputs[f"jpeg{suffix}"] = written["jpeg"]
+            if "jpeg_reduced" in written:
+                warnings.append(
+                    f"the panorama{suffix} is too large for JPEG (more than 65,500 px on a "
+                    f"side); its JPEG was saved reduced to {written['jpeg_reduced']} px. The "
+                    "full-size image is unaffected.")
             outputs[f"preview{suffix}"] = written["preview"]
             outputs[f"panorama_pixels{suffix}"] = f"{pano.shape[1]}x{pano.shape[0]}"
 
@@ -594,6 +678,7 @@ def run(args: argparse.Namespace) -> int:
                    else disabled_result(args.scan_mode, reason=ba_off_reason).to_dict()),
                 "per_segment": [r.to_dict() for r in ba_results],
             },
+            "reconnect": {"enabled": not args.no_reconnect, **reconnect.to_dict()},
             "rejoin": {
                 "enabled": not args.no_rejoin,
                 "window": args.rejoin_window,
@@ -637,6 +722,8 @@ def run(args: argparse.Namespace) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if not 1 <= args.jpeg_quality <= 100:
+        parser.error("--jpeg-quality must be between 1 and 100")
     if args.sampling_fps <= 0:
         parser.error("--sampling-fps must be > 0")
     if args.image_stride < 1:

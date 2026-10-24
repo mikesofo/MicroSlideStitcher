@@ -179,6 +179,42 @@ is video-only; use `none` or the colour-safe `clahe` for stills.
 
 `--help` prints the same worked examples.
 
+## 3a. Blurred frames and the overlap check (0.7.1)
+
+**Which frames are used.** By default (`--frame-selection motion`) every frame of the video
+is checked. Frames smeared by a moving slide or out of focus are skipped, and the sharpest
+frame of each stretch of movement is used. Sharpness is judged against the frames around it,
+so bare glass is not mistaken for blur. `frame_selection.csv` in the diagnostics folder lists
+every frame and why it was kept or skipped. If the slide moved so fast that no sharp frame
+overlaps the previous one, the log names the time in the video where that happened.
+`--frame-selection fixed --sampling-fps 2` gives the old fixed-rate behaviour.
+
+**The overlap check.** Two frames are only joined if they share at least `--min-overlap`
+(10 %) of the frame horizontally **and** vertically, the matched points are spread over the
+shared area, and the two images look alike there (`--min-overlap-agreement`, 0.60). This
+applies to every join, including joins across a turn and joins between pieces, and is never
+relaxed.
+
+## 3b. Reconnecting pieces by content (0.8.0)
+
+If the scan still breaks into pieces - the slide moved too fast at a turn, or every frame there
+was blurred - the program looks for frames that show the same tissue in different pieces,
+whenever they were recorded: the row above, or the same strip on the way back. Two pieces are
+joined only if at least two such matches, from different frames, agree on where they fit, and
+every match passes the full overlap check. All frame positions are then refined together so the
+overlapping passes line up. Details are in `reconnect.json`; `--no-reconnect` turns it off.
+
+Practical consequence for recording: going back over tissue you have already covered is
+helpful, not harmful. It gives the program the overlaps it needs to join pieces.
+
+## 3c. JPEG for sharing (0.8.1)
+
+Next to the full-quality TIFF (or PNG) the program also saves a JPEG with the same name, about a
+tenth of the size, for e-mail, presentations or a phone. `--jpeg-quality` sets its quality
+(default 90); `--jpeg-copy no` turns it off. In the GUI, "Save as JPEG..." in the Panorama tab
+converts a finished panorama, including one from an earlier run, without stitching again. Keep
+the TIFF as the master copy: JPEG discards some fine detail.
+
 ## 4. Serpentine scans and global bundle adjustment (0.7.0)
 
 ### Which scan type do I have?
