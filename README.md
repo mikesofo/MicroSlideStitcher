@@ -11,7 +11,27 @@ CLI and optional desktop GUI, all processing local — nothing is uploaded anywh
 > diagnosis or measurement. Geometry, colour and focus are not calibrated; always go back to
 > the glass slide for diagnostic work.
 
+Current version: **0.8.1**. What changed in each version is in [CHANGELOG.txt](CHANGELOG.txt).
+
 ---
+
+## 0. Download and run (no installation)
+
+Most people only need the AppImage from the
+[Releases page](https://github.com/mikesofo/MicroSlideStitcher/releases/latest): one file that
+contains the program, the GUI and ffmpeg.
+
+```bash
+chmod +x MicroSlideStitcher-0.8.1-x86_64.AppImage
+./MicroSlideStitcher-0.8.1-x86_64.AppImage
+```
+
+If your system has no FUSE 2, run it with `--appimage-extract-and-run`. It needs glibc 2.39
+or newer: Arch, Manjaro, Fedora 40+ and Ubuntu 24.04 work; Ubuntu 22.04, Debian 12 and
+RHEL 9 are too old. The bundled ffmpeg is GPLv3 and its source is attached to the same
+release as `ffmpeg-7.0.2.tar.xz`; MicroSlideStitcher itself is MIT licensed.
+
+The rest of this README is for running from source and for the command line.
 
 ## 1. Prerequisites (Manjaro / Arch)
 
@@ -45,7 +65,7 @@ failed on ffmpeg 8 with `Unrecognized option 'vsync'`.
 ## 2. Install
 
 ```bash
-git clone <your-copy> ~/MicroSlideStitcher      # or just unpack it there
+git clone https://github.com/mikesofo/MicroSlideStitcher.git ~/MicroSlideStitcher
 cd ~/MicroSlideStitcher
 
 python -m venv .venv                            # dedicated venv, nothing global
@@ -103,13 +123,13 @@ cd ~/MicroSlideStitcher
 .venv/bin/python -m micro_slide_stitcher \
     --input ~/videos/scan_10x.mp4 \
     --output ~/pano.tif \
-    --sampling-fps 2 \
     --detector orb \
     --normalize clahe \
     --blur-threshold 10 \
     --diagnostics ~/msc_diag
 ```
 
+The full run writes `~/pano.tif` (the master copy) and `~/pano.jpg` (for sharing).
 Open `~/msc_diag/report.html` in a browser afterwards — it summarises settings, timings,
 accepted/rejected frames, registration quality, warnings and limitations, and embeds the
 panorama preview, camera path and match visualisations.
@@ -220,7 +240,7 @@ the TIFF as the master copy: JPEG discards some fine detail.
 ### Which scan type do I have?
 
 - **Single sweep** — you panned across the slide once, in one continuous direction. This is
-  the default (`--scan-mode sweep`) and it behaves exactly as every earlier version did.
+  the default (`--scan-mode sweep`) and it registers frames one after the other, as earlier versions did.
 - **Serpentine** — you panned across a row, stepped down, panned back the other way, stepped
   down again, and so on, covering an area rather than a strip. Choose `--scan-mode serpentine`.
 
@@ -259,7 +279,7 @@ drift apart.
 
 | You typed | What happens |
 |---|---|
-| nothing | `--scan-mode sweep`; no discovery, no refinement; identical to 0.6.0 output |
+| nothing | `--scan-mode sweep`; no cross-row discovery; refinement only if pieces were reconnected by content |
 | `--scan-mode serpentine` | cross-row discovery **and** bundle adjustment on |
 | `--scan-mode sweep --bundle-adjust` | refinement on for a plain sweep (advanced; usually little or no gain) |
 | `--scan-mode serpentine --no-bundle-adjust` | discovery settings for a serpentine path, refinement **off** |
@@ -269,6 +289,9 @@ drift apart.
 `sweep`: the explicit low-level flag beats the convenience setting. Everything the refinement
 did — how many cross-row overlaps were found and accepted, how many iterations it ran, and the
 reprojection error before and after — is written to the log, `summary.json` and `report.html`.
+
+Since 0.8.0 the refinement also runs in single-sweep mode whenever pieces were reconnected
+by content (section 3b), so overlapping passes line up.
 
 ### It cannot cost you a scan
 
@@ -285,8 +308,9 @@ you time; it cannot cost you output.
   barely constrain drift. Real gains need a path that comes back near itself.
 - A lower reprojection error does **not** prove a more accurate result. The program therefore
   refuses any refinement that changes a frame's scale or rotation beyond the gates the ordinary
-  pairwise path enforces, or that moves a frame further than `--ba-max-shift-frac`, and it
-  prefers a translation-only fit unless a scale-and-rotation fit is clearly better.
+  pairwise path enforces, or that moves a frame further than `--ba-max-shift-frac`. Since 0.7.1 the refinement moves frames only (no scale or
+  rotation): a slide is not rotated during a scan and the magnification does not change, and
+  the scale-and-rotation fit was found to shrink frames to lower its own error score.
 - The refinement only makes frame *placement* consistent. It does not sharpen blurred frames,
   fix a focus change halfway through, or invent overlap that was never recorded.
 - Measured results for this project's synthetic test scans are in
@@ -298,8 +322,9 @@ you time; it cannot cost you output.
 |---|---|---|
 | `--input` | required | Source video (`.mp4`, `.mov`, anything ffmpeg reads), image folder, one still image or quoted image glob. **Opened read-only, never modified or moved.** |
 | `--input-mode` | `auto` | Detect video versus images from `--input`. Use `video` or `images` to force the interpretation and get a clear usage error if it does not fit. |
-| `--output` | required | Panorama path. Extension picks the format: `.tif`/`.tiff` → deflate-compressed RGB TIFF via `tifffile` (widely compatible, e.g. QuPath/ImageJ), `.png`, `.jpg`. A PNG preview is *always* written into the diagnostics dir as well. |
-| `--sampling-fps` | `2` | Frames sampled per second of video. This is the single most important knob: it must be high enough that consecutive sampled frames still overlap (aim for 40–70 % overlap), low enough that you do not waste time on near-duplicates. |
+| `--output` | required | Panorama path. Extension picks the format: `.tif`/`.tiff` → deflate-compressed RGB TIFF via `tifffile` (widely compatible, e.g. QuPath/ImageJ), `.png`, `.jpg`. A PNG preview is *always* written into the diagnostics dir as well, and a TIFF/PNG gets a JPEG copy for sharing (see `--jpeg-copy`). |
+| `--frame-selection` | `motion` | How frames are taken from a video. `motion` reads every frame, skips blurred ones (including motion blur from a moving slide) and keeps the sharpest frame of each stretch of movement; `fixed` samples `--sampling-fps` frames per second as 0.7.0 did. Every decoded frame and why it was kept or skipped is in `frame_selection.csv`. |
+| `--sampling-fps` | `2` | Used with `--frame-selection fixed` only. Frames sampled per second of video. This is the single most important knob: it must be high enough that consecutive sampled frames still overlap (aim for 40–70 % overlap), low enough that you do not waste time on near-duplicates. |
 | `--image-order` | `name` | Still-image ordering: `name` is a natural sort (`IMG_2` before `IMG_10`); `mtime` follows modification time and natural-sorts any ties. |
 | `--image-stride` | `1` | Still-image sampling: use every Nth ordered image. In image mode this replaces video’s `--sampling-fps`, which is ignored with a warning. |
 | `--detector` | `orb` | Primary feature detector. `orb` is fast and free; `sift` is slower but stronger on low-contrast tissue. SIFT is *automatically* retried on any pair ORB fails, and that fallback is logged. |
@@ -314,13 +339,19 @@ you time; it cannot cost you output.
 | `--min-inlier-ratio` | `0.15` | Minimum inliers / ratio-test-matches. |
 | `--max-rotation-deg` | `5` | Reject a pair whose estimated rotation exceeds this (manual panning barely rotates). |
 | `--max-translation-frac` | `0.92` | Reject a pair whose estimated translation exceeds this fraction of the frame width/height — i.e. essentially no overlap left. |
+| `--min-overlap` | `0.1` | Every merge of two frames needs at least this fraction of the frame shared horizontally **and** vertically. `0` disables the overlap check (0.7.0 behaviour). |
+| `--min-overlap-spread` | `0.15` | The matched points must cover at least this fraction of the shared width and height. |
+| `--min-overlap-agreement` | `0.6` | The two frames must correlate at least this well inside the shared area. Correct pairs measured 0.76–0.99, wrong ones at most 0.53. |
+| `--no-reconnect` | off | Do not try to join separate pieces by matching their content (section 3b). |
+| `--jpeg-copy` | `yes` | Also save a JPEG copy for sharing next to a TIFF or PNG panorama (same name, `.jpg`). |
+| `--jpeg-quality` | `90` | JPEG quality 1–100 for the JPEG copy or a `.jpg` `--output`. Panoramas over 65,500 px on a side get a reduced JPEG and a warning; the TIFF/PNG stays full size. |
 | `--no-homography-fallback` | off | Never try a full 8-DOF homography. By default a homography is only attempted after both ORB and SIFT similarity fits failed, and its use is logged loudly (`homography_fallbacks` in the report). |
 | `--no-bridge` | off | Do not try to bridge over a single unregistrable frame; break the chain instead. |
 | `--no-rejoin` | off | Disable **wide-baseline segment recovery**. By default, whenever the chain breaks the pipeline tries to re-join the two pieces before giving up (see below). With this flag the pieces stay disconnected (pre-0.2 behaviour). |
 | `--rejoin-window K` | `3` | Recovery window: the **last K** frames of a segment are matched against the **first K** frames of the next one — all K×K combinations, **SIFT directly** (ORB is what already failed), same partial-affine + RANSAC model and same inlier/scale/rotation/reprojection gates as everywhere else. The best candidate by inlier count wins. |
 | `--rejoin-max-translation-frac` | `2.0` | Translation allowance for recovery candidates, as a fraction of the frame width/height. **Deliberately much larger than `--max-translation-frac` (0.92)**: a chain break is normally caused by a fast pan that moved the field of view by *more* than one frame, so a plausible recovery transform is legitimately larger than anything the adjacent-pair path accepts. Everything else (scale 0.9–1.1, rotation, min inliers, min inlier ratio, max reprojection error) is unchanged, so an implausible fit is still rejected. |
 | `--min-segment-frames N` | `3` | After recovery, stitch **every** remaining segment that has at least N frames, not just the largest one. The largest segment keeps the exact `--output` path; the others are written as `<output>_seg02.<ext>`, `<output>_seg03.<ext>`, … in descending frame-count order, each with its own preview, camera path and report row. Segments smaller than N are listed explicitly as skipped (frame indices + time range) in the log, `summary.json` and `report.html`. If the whole scan is one segment nothing changes: one file, no suffixes. |
-| `--scan-mode` | `sweep` | How the slide was scanned. `sweep` = one continuous pan, registered as a pairwise chain — identical to 0.6.0. `serpentine` = back and forth in rows; enables non-adjacent (cross-row) match discovery **and** global bundle adjustment, and searches harder for row-to-row overlap. See section 4. |
+| `--scan-mode` | `sweep` | How the slide was scanned. `sweep` = one continuous pan, registered as a pairwise chain (pieces are still reconnected by content, section 3b). `serpentine` = back and forth in rows; enables non-adjacent (cross-row) match discovery **and** global bundle adjustment, and searches harder for row-to-row overlap. See section 4. |
 | `--bundle-adjust` | off | Refine **all** frame positions together by minimising total reprojection error instead of trusting the pairwise chain. Implied by `--scan-mode serpentine`; give it explicitly to force it on a plain sweep (advanced — usually little or no gain). |
 | `--no-bundle-adjust` | off | Never bundle adjust, even in serpentine mode. Wins over both `--scan-mode serpentine` and `--bundle-adjust`; giving `--bundle-adjust` and `--no-bundle-adjust` together is a usage error. |
 | `--ba-max-iterations` | `200` | Iteration cap for the refinement. |
@@ -367,16 +398,19 @@ away. Since 0.2 the pipeline instead:
 
 | Situation | Suggested flags |
 |---|---|
-| Slow, careful 10× scan (a field per ~1–2 s) | `--sampling-fps 1.5 --normalize clahe --blend feather` |
-| Normal 10× manual scan | `--sampling-fps 2` (defaults) |
-| 20× scan (smaller field → the same hand speed means more relative motion) | `--sampling-fps 3 --detector orb`, and if pairs start failing `--sampling-fps 4 --detector sift` |
-| 20× with weak texture (fat, mucin, pale dermis) | `--detector sift --sampling-fps 4 --min-inliers 20 --min-inlier-ratio 0.1` |
-| Long scan (> 1 min) on a laptop | first `--max-dimension 1280 --sampling-fps 1.5`, then decide |
+| Normal 10× manual scan, straight or back and forth | defaults (frames are chosen by sharpness and movement) |
+| Area covered in rows, back and forth | `--scan-mode serpentine` |
+| 20× scan, pairs failing | `--detector sift` |
+| 20× with weak texture (fat, mucin, pale dermis) | `--detector sift --min-inliers 20 --min-inlier-ratio 0.1` |
+| Long scan (> 1 min) on a laptop | first `--max-dimension 1280`, then decide |
 | Visible exposure steps between fields | `--normalize temporal` (or `clahe`) plus `--blend multiband` |
+
+The `--sampling-fps` advice in older notes applies only with `--frame-selection fixed`.
 
 **Recording tips that matter more than any flag:** move slowly and in straight strips,
 pause briefly at the end of each strip, keep the same objective and do not touch the focus
 or the phone zoom mid-strip, disable phone HDR if you can, and overlap strips by ~30 %.
+Changing direction and going back over tissue already covered is fine and helps reconnection.
 
 ## 7. Diagnostics directory
 
@@ -384,6 +418,8 @@ or the phone zoom mid-strip, disable phone HDR if you can, and overlap strips by
 <diagnostics>/
   video_metadata.json        ffprobe result for a video (size, fps, duration, codec, frame count, audio)
   image_metadata.json        image count, dimensions, uniform-size result, order and stride for stills
+  frame_selection.csv        EVERY decoded video frame: sharpness, movement, kept or
+                             skipped and why (--frame-selection motion)
   frame_metrics.csv/.json    EVERY sampled candidate: index, timestamp, focus score,
                              duplicate score, mean intensity, accepted, reason
   accepted_frames.txt        accepted list
@@ -399,6 +435,8 @@ or the phone zoom mid-strip, disable phone HDR if you can, and overlap strips by
                              transform of every frame in every segment
   rejoin_attempts.json       EVERY wide-baseline rejoin attempt with its metrics and the
                              accept/reject reason (only written when the chain broke)
+  reconnect.json             every content-based reconnection candidate, link and merge
+  transforms_bundle_adjusted.json  the frame positions actually used after refinement
   camera_path.png            the reconstructed scan trajectory (matplotlib)
   camera_path_seg02.png ...  the same for each additional written segment
   exposure_comparison.png    before/after exposure normalisation
@@ -435,6 +473,10 @@ the typical in-focus value. Eyepiece video legitimately scores in the tens, not 
 too fast for that sampling rate. If they show the same tissue but few matches, it is a texture
 or focus problem → `--detector sift`, lower `--min-inliers`.
 
+**Many frames skipped as blurred** — `frame_selection.csv` shows each frame's sharpness and
+why it was skipped. Move the slide more slowly, especially at turns; if the log names a time
+where no sharp frame overlapped the previous one, re-record that stretch.
+
 **Low-texture tissue** (fat, mucin, pale dermis, mostly empty glass) — SIFT plus a higher
 sampling rate; and while recording, keep some structure (an edge, a vessel, a nucleus-rich
 band) in the field rather than panning across blank glass.
@@ -447,13 +489,13 @@ rather than a free hand, and tap-to-lock focus and exposure before starting.
 `--normalize temporal`, and `--blend multiband`. Locking the phone's exposure before recording
 removes the problem at the source.
 
-**Excessive drift / the panorama bends** — long chains accumulate small errors; this build has
-no global bundle adjustment. Warnings such as `cumulative scale drift detected` and
+**Excessive drift / the panorama bends** — long chains accumulate small errors. For an area
+scan use `--scan-mode serpentine`, which refines all positions together (section 4). Warnings such as `cumulative scale drift detected` and
 `suspicious trajectory jump` appear in the log and the report. Record shorter strips and stitch
 them separately, or lower `--sampling-fps` so fewer transforms are chained.
 
 **"chain break" / "N disconnected segments"** — the pipeline first tries a wide-baseline
-rejoin (see the next entry); whatever cannot be joined is still written out. Check
+rejoin (see the next entry) and then reconnection by content (section 3b, `reconnect.json`); whatever cannot be joined is still written out. Check
 `transforms.csv` and `rejoin_attempts.json` for the break, then re-record that stretch or
 raise `--sampling-fps`.
 
@@ -561,12 +603,12 @@ preview, `Ctrl+R` full resolution, `Esc` cancel, `F1` the built-in user manual.
 | --- | --- |
 | **1 · Input video or image sequence** | Drag a video file or an image folder anywhere onto the window, use *Choose video…*, or use *Choose image folder…*. Video metadata comes from `ffprobe`; image folders show image count, dimensions, ordering, uniform-size status and candidate count without ffmpeg. Runs off the UI thread. |
 | **2 · Where the results go** | `--output` panorama path (the extension picks the format) and the `--diagnostics` folder, which is derived from the output name unless you override it. |
-| **3 · Settings** | Every exposed CLI flag, with the CLI's own defaults and the CLI's own help text as the tooltip. The seven rarely-touched flags (`--blend`, `--dedup-threshold`, `--min-inliers`, `--min-segment-frames`, `--rejoin-window`, `--no-rejoin`, `--keep-intermediates`) sit in a collapsed *Advanced settings* group. *Reset all settings to the CLI defaults* does what it says. |
+| **3 · Settings** | Every exposed CLI flag, with the CLI's own defaults and the CLI's own help text as the tooltip. The main group includes *Scan type*, *Frames taken from video* and *JPEG copy for sharing*. Rarely-touched flags (`--blend`, `--jpeg-quality`, `--dedup-threshold`, `--min-overlap`, `--min-inliers`, `--min-segment-frames`, `--rejoin-window`, `--no-rejoin`, `--bundle-adjust`, `--ba-max-iterations`, `--keep-intermediates`) sit in a collapsed *Advanced settings* group. *Reset all settings to the CLI defaults* does what it says. |
 | **Equivalent command line** | Read-only, selectable, updates live, with *Copy command*. By default it lists only the flags that differ from the CLI defaults (the shortest command that reproduces the run); tick *Show every flag* for the fully explicit form. Paste it into a terminal and you get an identical run. |
 | **Run** | *Quick preview* forces `--max-dimension 960` and a `.png` output into a `<name>_preview_diagnostics` folder — seconds instead of minutes. *Full resolution* runs your settings as shown. Both run in a background thread; the progress bar and stage text are derived from the pipeline's own log lines. *Cancel run* terminates the child process group and drops a `cancelled.txt` marker in the diagnostics folder. |
 | **Run log** | The pipeline's log, streamed live (the same lines that land in `<diagnostics>/pipeline.log`), with WARNING and ERROR highlighted. |
 | **Frame quality** | Focus score of every sampled frame against its timestamp, read from `frame_metrics.csv`, green for accepted and red for rejected. Drag the blue line (or use the arrow keys) to pick a `--blur-threshold`: the label shows how many frames would be kept or rejected, and the settings panel and the command line follow it. Populated after a run, or by loading an earlier diagnostics folder. |
-| **Panorama** | Pan (drag) and zoom (wheel, `+`/`-`, *Fit to window*, *1:1*) over the fast preview PNG, with *Load full-res file* for the real TIFF/PNG (loaded off-thread). If the scan was written as several segments, the selector at the top switches between them and shows frame count, time range, pixel size and coverage. *Open report.html* opens the run's report in your normal browser (no embedded browser engine is bundled) and *Open folder* opens the output directory. |
+| **Panorama** | Pan (drag) and zoom (wheel, `+`/`-`, *Fit to window*, *1:1*) over the fast preview PNG, with *Load full-res file* for the real TIFF/PNG (loaded off-thread). If the scan was written as several segments, the selector at the top switches between them and shows frame count, time range, pixel size and coverage. *Save as JPEG…* converts the finished panorama, or one from an earlier run, to JPEG without stitching again. The buttons are in two rows. *Open report.html* opens the run's report in your normal browser (no embedded browser engine is bundled) and *Open folder* opens the output directory. |
 | **Results summary** | Verdict, accepted/rejected counts, segments found/written/skipped, rejoin attempts and outcome, registration statistics (inlier median, reprojection error), runtime and output paths — all read from `summary.json`, never re-derived. Warnings from the run are listed underneath. |
 
 Your settings, the last output path and the last input directory are remembered between
@@ -638,9 +680,12 @@ positions must strictly increase) and fills the Back/Forward history, that the F
 highlights exactly the matching passages and steps between them, that *Save manual as HTML…*
 writes a non-empty standalone file, that the generated flag table covers **every** option
 string of `cli.build_parser()`, and that no web engine is imported anywhere — including in a
-fresh interpreter that builds the manual. Install the test extra with
-`.venv/bin/pip install -e '.[test,gui]'`. **91 tests in total** (42 CLI/pipeline + 49 GUI);
-the GUI tests skip themselves if PySide6 is not installed.
+fresh interpreter that builds the manual. Since 0.7.1, `tests/test_v071_selection_overlap.py` covers frame selection by sharpness and
+movement and the horizontal-and-vertical overlap check, and `tests/test_jpeg.py` (0.8.1) covers
+the JPEG copy, quality, conversion of an existing panorama and the size limit.
+
+Install the test extra with `.venv/bin/pip install -e '.[test,gui]'`. **145 tests in total**
+(96 CLI/pipeline + 49 GUI); the GUI tests skip themselves if PySide6 is not installed.
 
 `scripts/make_synthetic_video.py` can also be run by hand to produce a test clip
 (`--help` for options).
@@ -656,8 +701,10 @@ Created by **Michail Sofopoulos** — Histopathology / Dermatopathology · Athen
 ```
 MicroSlideStitcher/
   README.md  PROJECT_LOG.md  requirements.txt  pyproject.toml  .venv/
-  src/micro_slide_stitcher/{__init__,__main__,cli,probe,extract,metrics,register,
-                            stitch,bundle,diagnostics,report,logging_utils}.py
+  CHANGELOG.txt  LICENSE
+  src/micro_slide_stitcher/{__init__,__main__,cli,probe,extract,images,keyframes,metrics,
+                            register,reconnect,stitch,bundle,environment,diagnostics,report,
+                            logging_utils}.py
   src/micro_slide_stitcher/gui/{__init__,__main__,mainwindow,about,manual,cli_spec,command,
                                 runner,results}.py
   src/micro_slide_stitcher/gui/widgets/{imageview,logpane,settings_panel,timeline}.py
